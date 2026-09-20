@@ -16,6 +16,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Flatten repo if project is nested in a subfolder
+        run: |
+          if [ ! -f pubspec.yaml ]; then
+            DIR=$(dirname "$(find . -maxdepth 3 -name pubspec.yaml | head -n1)")
+            echo "Project found in $DIR — moving it to repo root"
+            shopt -s dotglob
+            mv "$DIR"/* .
+            rmdir "$DIR" || true
+          fi
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -46,7 +56,7 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties') }}
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/gradle-wrapper.properties') }}
           restore-keys: |
             gradle-${{ runner.os }}-
 
@@ -81,6 +91,17 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Flatten repo if project is nested in a subfolder
+        shell: pwsh
+        run: |
+          if (-not (Test-Path pubspec.yaml)) {
+            $pubspecFile = Get-ChildItem -Path . -Filter pubspec.yaml -Recurse -Depth 2 | Select-Object -First 1
+            $dir = $pubspecFile.DirectoryName
+            Write-Host "Project found in $dir - moving it to repo root"
+            Get-ChildItem -Path $dir -Force | Move-Item -Destination . -Force
+            Remove-Item -Path $dir -Force -Recurse -ErrorAction SilentlyContinue
+          }
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
