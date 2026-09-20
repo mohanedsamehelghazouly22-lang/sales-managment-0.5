@@ -1,4 +1,4 @@
-name: Build & Release APK
+name: Build & Release (Android + Windows)
 
 on:
   push:
@@ -9,10 +9,9 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    name: Build release APK
+  build-android:
+    name: Build Android APK
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -29,14 +28,14 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Read app version from pubspec.yaml
+      - name: Read app version
         id: version
         run: |
           VERSION=$(grep '^version:' pubspec.yaml | awk '{print $2}')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Generate the android/ platform project
-        run: flutter create . --platforms=android
+        run: flutter create . --platforms=android --project-name sales_manager --org com.salesmanager.app
 
       - name: Patch android project for notifications
         run: python3 tool/patch_android.py
@@ -63,23 +62,88 @@ jobs:
             --dart-define=SUPABASE_URL="$SUPABASE_URL" \
             --dart-define=SUPABASE_PUBLISHABLE_KEY="$SUPABASE_PUBLISHABLE_KEY"
 
-      - name: Rename APK
+      - name: Package APK
         run: |
           mkdir -p dist
           cp build/app/outputs/flutter-apk/app-release.apk \
              "dist/sales-manager-v${{ steps.version.outputs.version }}-build${{ github.run_number }}.apk"
 
-      - name: Upload build artifact
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: sales-manager-apk
           path: dist/*.apk
           retention-days: 30
 
+  build-windows:
+    name: Build Windows app
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Read app version
+        id: version
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path pubspec.yaml -Pattern '^version:').ToString().Split(' ')[1]
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Generate the windows/ platform project
+        run: flutter create . --platforms=windows --project-name sales_manager --org com.salesmanager.app
+
+      - name: Enable Windows desktop support
+        run: flutter config --enable-windows-desktop
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Build release Windows app
+        shell: pwsh
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          flutter build windows --release `
+            --dart-define=SUPABASE_URL="$env:SUPABASE_URL" `
+            --dart-define=SUPABASE_PUBLISHABLE_KEY="$env:SUPABASE_PUBLISHABLE_KEY"
+
+      - name: Package Windows build
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $releaseDir = Get-ChildItem -Path build\windows -Recurse -Directory -Filter Release | Select-Object -First 1
+          $zipName = "dist\sales-manager-windows-v${{ steps.version.outputs.version }}-build${{ github.run_number }}.zip"
+          Compress-Archive -Path "$($releaseDir.FullName)\*" -DestinationPath $zipName
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sales-manager-windows
+          path: dist/*.zip
+          retention-days: 30
+
+  release:
+    name: Publish GitHub Release
+    needs: [ build-android, build-windows ]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
       - name: Create GitHub Release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: "Sales Manager v${{ steps.version.outputs.version }} (build ${{ github.run_number }})"
-          files: dist/*.apk
+          name: "Sales Manager build ${{ github.run_number }}"
+          files: dist/*
